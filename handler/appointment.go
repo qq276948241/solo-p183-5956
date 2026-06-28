@@ -111,6 +111,11 @@ func (h *AppointmentHandler) Cancel(c *gin.Context) {
 	response.OK(c, a)
 }
 
+type CompleteRequest struct {
+	Diagnosis    string `json:"diagnosis"`
+	Prescription string `json:"prescription"`
+}
+
 func (h *AppointmentHandler) Complete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -126,13 +131,39 @@ func (h *AppointmentHandler) Complete(c *gin.Context) {
 		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "只能标记状态为 booked 的预约为已完成")
 		return
 	}
+	var req CompleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "请求参数无效: "+err.Error())
+		return
+	}
+	if req.Diagnosis == "" {
+		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "诊断结论不能为空")
+		return
+	}
+	tx := h.DB.Begin()
 	a.Status = "completed"
-	if err := h.DB.Save(&a).Error; err != nil {
+	if err := tx.Save(&a).Error; err != nil {
+		tx.Rollback()
 		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
 		return
 	}
+	record := model.VisitRecord{
+		AppointmentID: a.ID,
+		Diagnosis:     req.Diagnosis,
+		Prescription:  req.Prescription,
+	}
+	if err := tx.Create(&record).Error; err != nil {
+		tx.Rollback()
+		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
+		return
+	}
+	tx.Commit()
 	h.DB.Preload("Patient").Preload("Doctor").First(&a, a.ID)
-	response.OK(c, a)
+	h.DB.Preload("Appointment").First(&record, record.ID)
+	response.OK(c, gin.H{
+		"appointment":  a,
+		"visit_record": record,
+	})
 }
 
 func (h *AppointmentHandler) ListByDate(c *gin.Context) {

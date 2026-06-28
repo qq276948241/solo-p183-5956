@@ -44,6 +44,7 @@ func main() {
 		auth.DELETE("/patients/:id", patientH.Delete)
 		auth.GET("/patients/:id", patientH.GetByID)
 		auth.GET("/patients", patientH.List)
+		auth.GET("/patients/:id/history", patientH.GetHistory)
 
 		doctorH := handler.DoctorHandler{DB: db}
 		auth.POST("/doctors", doctorH.Create)

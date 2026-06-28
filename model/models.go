@@ -56,6 +56,17 @@ type Appointment struct {
 	Doctor     Doctor         `json:"doctor" gorm:"foreignKey:DoctorID"`
 }
 
+type VisitRecord struct {
+	ID            uint           `json:"id" gorm:"primaryKey"`
+	AppointmentID uint           `json:"appointment_id" gorm:"not null;uniqueIndex:idx_visit_appt_id"`
+	Diagnosis     string         `json:"diagnosis" gorm:"type:varchar(500);not null"`
+	Prescription  string         `json:"prescription" gorm:"type:text"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `json:"-" gorm:"index"`
+	Appointment   Appointment    `json:"appointment" gorm:"foreignKey:AppointmentID"`
+}
+
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&Patient{}, &Doctor{}, &DoctorSchedule{}, &Appointment{})
+	return db.AutoMigrate(&Patient{}, &Doctor{}, &DoctorSchedule{}, &Appointment{}, &VisitRecord{})
 }

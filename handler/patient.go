@@ -120,3 +120,38 @@ func (h *PatientHandler) List(c *gin.Context) {
 	}
 	response.OK(c, list)
 }
+
+func (h *PatientHandler) GetHistory(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeParamError)
+		return
+	}
+	var patient model.Patient
+	if err := h.DB.First(&patient, id).Error; err != nil {
+		response.Fail(c, http.StatusNotFound, response.CodeNotFound)
+		return
+	}
+	type HistoryItem struct {
+		AppDate     string `json:"app_date"`
+		StartTime   string `json:"start_time"`
+		EndTime     string `json:"end_time"`
+		DoctorName  string `json:"doctor_name"`
+		Dept        string `json:"dept"`
+		Diagnosis   string `json:"diagnosis"`
+		Prescription string `json:"prescription"`
+	}
+	var items []HistoryItem
+	err = h.DB.Table("visit_records").
+		Select("appointments.app_date, appointments.start_time, appointments.end_time, doctors.name as doctor_name, doctors.dept, visit_records.diagnosis, visit_records.prescription").
+		Joins("JOIN appointments ON appointments.id = visit_records.appointment_id").
+		Joins("JOIN doctors ON doctors.id = appointments.doctor_id").
+		Where("appointments.patient_id = ?", id).
+		Order("appointments.app_date desc, appointments.start_time desc").
+		Find(&items).Error
+	if err != nil {
+		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
+		return
+	}
+	response.OK(c, items)
+}
