@@ -1,90 +1,77 @@
 package handler
 
 import (
-	"clinic/model"
 	"clinic/response"
+	"clinic/service"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type AppointmentHandler struct {
-	DB *gorm.DB
+	Service *service.AppointmentService
+}
+
+func (h *AppointmentHandler) handleErr(c *gin.Context, err error) {
+	if biz, ok := err.(*service.BizError); ok {
+		if biz.Msg != "" {
+			response.FailWithMsg(c, httpStatusForCode(biz.Code), biz.Code, biz.Msg)
+		} else {
+			response.Fail(c, httpStatusForCode(biz.Code), biz.Code)
+		}
+		return
+	}
+	response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
+}
+
+func httpStatusForCode(code int) int {
+	switch code {
+	case response.CodeParamError, response.CodeInvalidTimeSlot, response.CodeDoctorNoSchedule:
+		return http.StatusBadRequest
+	case response.CodeUnauthorized:
+		return http.StatusUnauthorized
+	case response.CodeNotFound:
+		return http.StatusNotFound
+	case response.CodeDuplicate, response.CodeScheduleConflict, response.CodeAppointmentExists:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+type CompleteRequest struct {
+	Diagnosis    string `json:"diagnosis"`
+	Prescription string `json:"prescription"`
 }
 
 func (h *AppointmentHandler) Create(c *gin.Context) {
-	var a model.Appointment
+	var a struct {
+		PatientID uint   `json:"patient_id"`
+		DoctorID  uint   `json:"doctor_id"`
+		AppDate   string `json:"app_date"`
+		StartTime string `json:"start_time"`
+		EndTime   string `json:"end_time"`
+		Remark    string `json:"remark"`
+	}
 	if err := c.ShouldBindJSON(&a); err != nil {
 		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "请求参数无效: "+err.Error())
 		return
 	}
-	if a.PatientID == 0 || a.DoctorID == 0 || a.AppDate == "" || a.StartTime == "" || a.EndTime == "" {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "patient_id、doctor_id、app_date、start_time、end_time 均为必填")
+	req := &service.CreateAppointmentRequest{
+		PatientID: a.PatientID,
+		DoctorID:  a.DoctorID,
+		AppDate:   a.AppDate,
+		StartTime: a.StartTime,
+		EndTime:   a.EndTime,
+		Remark:    a.Remark,
+	}
+	appt, err := h.Service.Create(req)
+	if err != nil {
+		h.handleErr(c, err)
 		return
 	}
-	if _, err := time.Parse("2006-01-02", a.AppDate); err != nil {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "app_date 格式应为 YYYY-MM-DD")
-		return
-	}
-	if !isValidTimeFmt(a.StartTime) || !isValidTimeFmt(a.EndTime) {
-		response.Fail(c, http.StatusBadRequest, response.CodeInvalidTimeSlot)
-		return
-	}
-	if a.StartTime >= a.EndTime {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeInvalidTimeSlot, "开始时间必须早于结束时间")
-		return
-	}
-	var patient model.Patient
-	if err := h.DB.First(&patient, a.PatientID).Error; err != nil {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeNotFound, "患者不存在")
-		return
-	}
-	var doctor model.Doctor
-	if err := h.DB.First(&doctor, a.DoctorID).Error; err != nil {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeNotFound, "医生不存在")
-		return
-	}
-	apptDate, _ := time.Parse("2006-01-02", a.AppDate)
-	weekday := int(apptDate.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	var schedules []model.DoctorSchedule
-	h.DB.Where("doctor_id = ? AND weekday = ?", a.DoctorID, weekday).Find(&schedules)
-	matched := false
-	for _, s := range schedules {
-		if s.StartTime <= a.StartTime && s.EndTime >= a.EndTime {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		response.Fail(c, http.StatusBadRequest, response.CodeDoctorNoSchedule)
-		return
-	}
-	var existing model.Appointment
-	err := h.DB.Unscoped().
-		Where("doctor_id = ? AND app_date = ? AND start_time < ? AND end_time > ? AND status = ?",
-			a.DoctorID, a.AppDate, a.EndTime, a.StartTime, "booked").
-		First(&existing).Error
-	if err == nil {
-		response.Fail(c, http.StatusConflict, response.CodeAppointmentExists)
-		return
-	}
-	a.Status = "booked"
-	if err := h.DB.Create(&a).Error; err != nil {
-		if isDupErr(err) {
-			response.Fail(c, http.StatusConflict, response.CodeAppointmentExists)
-			return
-		}
-		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
-		return
-	}
-	h.DB.Preload("Patient").Preload("Doctor").First(&a, a.ID)
-	response.OK(c, a)
+	response.OK(c, appt)
 }
 
 func (h *AppointmentHandler) Cancel(c *gin.Context) {
@@ -93,27 +80,12 @@ func (h *AppointmentHandler) Cancel(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, response.CodeParamError)
 		return
 	}
-	var a model.Appointment
-	if err := h.DB.First(&a, id).Error; err != nil {
-		response.Fail(c, http.StatusNotFound, response.CodeNotFound)
+	appt, err := h.Service.Cancel(uint(id))
+	if err != nil {
+		h.handleErr(c, err)
 		return
 	}
-	if a.Status != "booked" {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "只能取消状态为 booked 的预约")
-		return
-	}
-	a.Status = "cancelled"
-	if err := h.DB.Save(&a).Error; err != nil {
-		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
-		return
-	}
-	h.DB.Preload("Patient").Preload("Doctor").First(&a, a.ID)
-	response.OK(c, a)
-}
-
-type CompleteRequest struct {
-	Diagnosis    string `json:"diagnosis"`
-	Prescription string `json:"prescription"`
+	response.OK(c, appt)
 }
 
 func (h *AppointmentHandler) Complete(c *gin.Context) {
@@ -122,61 +94,31 @@ func (h *AppointmentHandler) Complete(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, response.CodeParamError)
 		return
 	}
-	var a model.Appointment
-	if err := h.DB.First(&a, id).Error; err != nil {
-		response.Fail(c, http.StatusNotFound, response.CodeNotFound)
-		return
-	}
-	if a.Status != "booked" {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "只能标记状态为 booked 的预约为已完成")
-		return
-	}
 	var req CompleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "请求参数无效: "+err.Error())
 		return
 	}
-	if req.Diagnosis == "" {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "诊断结论不能为空")
-		return
-	}
-	tx := h.DB.Begin()
-	a.Status = "completed"
-	if err := tx.Save(&a).Error; err != nil {
-		tx.Rollback()
-		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
-		return
-	}
-	record := model.VisitRecord{
-		AppointmentID: a.ID,
+	appt, record, err := h.Service.Complete(&service.CompleteAppointmentRequest{
+		AppointmentID: uint(id),
 		Diagnosis:     req.Diagnosis,
 		Prescription:  req.Prescription,
-	}
-	if err := tx.Create(&record).Error; err != nil {
-		tx.Rollback()
-		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
+	})
+	if err != nil {
+		h.handleErr(c, err)
 		return
 	}
-	tx.Commit()
-	h.DB.Preload("Patient").Preload("Doctor").First(&a, a.ID)
-	h.DB.Preload("Appointment").First(&record, record.ID)
 	response.OK(c, gin.H{
-		"appointment":  a,
+		"appointment":  appt,
 		"visit_record": record,
 	})
 }
 
 func (h *AppointmentHandler) ListByDate(c *gin.Context) {
 	date := c.Query("date")
-	if _, err := time.Parse("2006-01-02", date); err != nil {
-		response.FailWithMsg(c, http.StatusBadRequest, response.CodeParamError, "date 参数格式应为 YYYY-MM-DD")
-		return
-	}
-	var list []model.Appointment
-	if err := h.DB.Preload("Patient").Preload("Doctor").
-		Where("app_date = ?", date).
-		Order("start_time").Find(&list).Error; err != nil {
-		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError)
+	list, err := h.Service.ListByDate(date)
+	if err != nil {
+		h.handleErr(c, err)
 		return
 	}
 	response.OK(c, list)

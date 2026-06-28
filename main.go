@@ -5,6 +5,7 @@ import (
 	"clinic/handler"
 	"clinic/middleware"
 	"clinic/model"
+	"clinic/service"
 	"fmt"
 	"log"
 
@@ -51,13 +52,15 @@ func main() {
 		auth.GET("/doctors", doctorH.List)
 		auth.GET("/doctors/:id", doctorH.GetByID)
 
-		scheduleH := handler.ScheduleHandler{DB: db}
+		scheduleSvc := service.NewScheduleService(db)
+		scheduleH := handler.ScheduleHandler{Service: scheduleSvc}
 		auth.POST("/doctors/:doctor_id/schedules", scheduleH.Create)
 		auth.PUT("/schedules/:id", scheduleH.Update)
 		auth.DELETE("/schedules/:id", scheduleH.Delete)
 		auth.GET("/doctors/:doctor_id/schedules", scheduleH.ListByDoctor)
 
-		appointmentH := handler.AppointmentHandler{DB: db}
+		appointmentSvc := service.NewAppointmentService(db)
+		appointmentH := handler.AppointmentHandler{Service: appointmentSvc}
 		auth.POST("/appointments", appointmentH.Create)
 		auth.PUT("/appointments/:id/cancel", appointmentH.Cancel)
 		auth.PUT("/appointments/:id/complete", appointmentH.Complete)
