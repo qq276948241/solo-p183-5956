@@ -57,7 +57,9 @@ func (s *AppointmentService) Create(req *CreateAppointmentRequest) (*model.Appoi
 		return nil, err
 	}
 
-	if err := s.checkAppointmentConflict(req.DoctorID, req.AppDate, req.StartTime, req.EndTime); err != nil {
+	tx := s.DB.Begin()
+	if err := s.checkAppointmentConflictForUpdate(tx, req.DoctorID, req.AppDate, req.StartTime, req.EndTime); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 
@@ -70,12 +72,15 @@ func (s *AppointmentService) Create(req *CreateAppointmentRequest) (*model.Appoi
 		Status:    "booked",
 		Remark:    req.Remark,
 	}
-	if err := s.DB.Create(a).Error; err != nil {
+	if err := tx.Create(a).Error; err != nil {
+		tx.Rollback()
 		if isDupErr(err) {
 			return nil, NewBizError(response.CodeAppointmentExists, "")
 		}
 		return nil, NewBizError(response.CodeInternalError, "")
 	}
+	tx.Commit()
+
 	s.DB.Preload("Patient").Preload("Doctor").First(a, a.ID)
 	return a, nil
 }
@@ -164,9 +169,9 @@ func (s *AppointmentService) checkDoctorSchedule(doctorID uint, appDate, startTi
 	return nil
 }
 
-func (s *AppointmentService) checkAppointmentConflict(doctorID uint, appDate, startTime, endTime string) error {
+func (s *AppointmentService) checkAppointmentConflictForUpdate(tx *gorm.DB, doctorID uint, appDate, startTime, endTime string) error {
 	var existing model.Appointment
-	err := s.DB.Unscoped().
+	err := tx.Set("gorm:query_option", "FOR UPDATE").
 		Where("doctor_id = ? AND app_date = ? AND start_time < ? AND end_time > ? AND status = ?",
 			doctorID, appDate, endTime, startTime, "booked").
 		First(&existing).Error

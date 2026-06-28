@@ -43,10 +43,10 @@ type DoctorSchedule struct {
 type Appointment struct {
 	ID         uint           `json:"id" gorm:"primaryKey"`
 	PatientID  uint           `json:"patient_id" gorm:"not null;uniqueIndex:idx_appt_unique"`
-	DoctorID   uint           `json:"doctor_id" gorm:"not null;uniqueIndex:idx_appt_unique"`
-	AppDate    string         `json:"app_date" gorm:"type:date;not null;uniqueIndex:idx_appt_unique"`
-	StartTime  string         `json:"start_time" gorm:"type:varchar(10);not null;uniqueIndex:idx_appt_unique;comment:格式 HH:mm"`
-	EndTime    string         `json:"end_time" gorm:"type:varchar(10);not null;uniqueIndex:idx_appt_unique;comment:格式 HH:mm"`
+	DoctorID   uint           `json:"doctor_id" gorm:"not null;uniqueIndex:idx_appt_unique;index:idx_appt_doctor_slot"`
+	AppDate    string         `json:"app_date" gorm:"type:date;not null;uniqueIndex:idx_appt_unique;index:idx_appt_doctor_slot"`
+	StartTime  string         `json:"start_time" gorm:"type:varchar(10);not null;uniqueIndex:idx_appt_unique;index:idx_appt_doctor_slot;comment:格式 HH:mm"`
+	EndTime    string         `json:"end_time" gorm:"type:varchar(10);not null;uniqueIndex:idx_appt_unique;index:idx_appt_doctor_slot;comment:格式 HH:mm"`
 	Status     string         `json:"status" gorm:"type:varchar(20);not null;default:booked;comment:booked/cancelled/completed"`
 	Remark     string         `json:"remark" gorm:"type:varchar(500)"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -68,5 +68,26 @@ type VisitRecord struct {
 }
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&Patient{}, &Doctor{}, &DoctorSchedule{}, &Appointment{}, &VisitRecord{})
+	if err := db.AutoMigrate(&Patient{}, &Doctor{}, &DoctorSchedule{}, &Appointment{}, &VisitRecord{}); err != nil {
+		return err
+	}
+	if !db.Migrator().HasColumn(&Appointment{}, "booked_slot_key") {
+		if err := db.Exec(`
+			ALTER TABLE appointments
+			ADD COLUMN booked_slot_key VARCHAR(100) GENERATED ALWAYS AS (
+				CASE WHEN status = 'booked'
+					THEN CONCAT(doctor_id, '-', app_date, '-', start_time, '-', end_time)
+					ELSE NULL
+				END
+			) STORED
+		`).Error; err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasIndex(&Appointment{}, "idx_booked_slot") {
+		if err := db.Exec(`CREATE UNIQUE INDEX idx_booked_slot ON appointments(booked_slot_key)`).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
